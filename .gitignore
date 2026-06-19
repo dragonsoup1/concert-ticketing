@@ -1,0 +1,9 @@
+# IntelliJ
+.idea/
+*.iws
+*.iml
+*.ipr
+
+# OS
+.DS_Store
+Thumbs.db

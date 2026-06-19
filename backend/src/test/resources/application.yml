@@ -1,0 +1,21 @@
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+
+  kafka:
+    bootstrap-servers: localhost:9999  # 실제 브로커 없음 — KafkaTemplate은 @MockBean으로 대체
+
+logging:
+  level:
+    com.api.backend: INFO
+    org.hibernate.SQL: OFF
+
+queue:
+  batch-size: 50
+  admission-ttl-minutes: 10
+
+rate-limit:
+  window-millis: 1000
+  max-requests: 10
