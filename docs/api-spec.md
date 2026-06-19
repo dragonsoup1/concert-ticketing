@@ -83,6 +83,8 @@ http://localhost:8080
 }
 ```
 
+**Error**: 없음 (조회 전용, 에러 발생 조건 없음)
+
 ---
 
 ### GET /api/concerts/{concertId}
@@ -158,6 +160,12 @@ http://localhost:8080
 
 **SeatStatus**: `AVAILABLE` | `HELD` | `SOLD`
 
+**Error**
+
+| HTTP | 조건 |
+|------|------|
+| 404 | 해당 concertId가 존재하지 않음 |
+
 ---
 
 ## 대기열
@@ -190,6 +198,12 @@ http://localhost:8080
 
 - `rank`: 대기열 내 순위 (0-based)
 - `estimatedWaitSeconds`: 예상 대기 시간 (`(rank / batchSize + 1)` 초)
+
+**Error**
+
+| HTTP | 조건 |
+|------|------|
+| 429 | Rate Limit 초과 (10 req/s) |
 
 ---
 
@@ -231,6 +245,8 @@ http://localhost:8080
   "error": null
 }
 ```
+
+**Error**: 없음 (조회 전용, 미입장 상태도 200으로 반환)
 
 ---
 
@@ -282,11 +298,12 @@ http://localhost:8080
 
 | HTTP | 조건 |
 |------|------|
-| 400 | 입장 허가 없음 (`QueueNotAdmittedException`) |
 | 400 | Idempotency-Key 헤더 누락 |
+| 403 | 대기열 입장 허가 없음 (`QueueNotAdmittedException`) |
 | 404 | userId 또는 seatId 없음 |
-| 409 | 좌석이 AVAILABLE 상태가 아님 (이미 선점됨) |
-| 409 | 분산 락 획득 실패 (동시 요청 충돌) |
+| 409 | 좌석이 AVAILABLE 상태가 아님 (`SeatNotAvailableException`) |
+| 429 | Rate Limit 초과 (10 req/s) |
+| 429 | 분산 락 획득 실패 — 잠시 후 재시도 (`LockAcquisitionFailedException`) |
 
 ---
 
@@ -360,7 +377,7 @@ http://localhost:8080
 }
 ```
 
-**PaymentStatus**: `REQUESTED` | `SUCCESS` | `FAILED` | `PENDING_CONFIRMATION`
+**PaymentStatus**: `SUCCESS` | `FAILED` | `PENDING_CONFIRMATION`
 
 **Response Headers (중복 요청)**
 
@@ -374,3 +391,4 @@ Idempotent-Replayed: true
 |------|------|
 | 400 | Idempotency-Key 헤더 누락 |
 | 404 | reservationId 없음 |
+| 429 | Rate Limit 초과 (10 req/s) |

@@ -5,17 +5,22 @@
 ```mermaid
 sequenceDiagram
     actor Client
+    participant RateLimit as RateLimitFilter
     participant API as QueueController
     participant QS as QueueService
     participant Redis
 
-    Client->>API: POST /api/queue/token?userId=42&concertId=1
+    Client->>RateLimit: POST /api/queue/token?userId=42&concertId=1
+    note over RateLimit: X-User-Id 헤더 없으면 rate limit 미적용 (pass-through)
+    RateLimit->>API: pass
+
     API->>QS: issueToken(userId, concertId)
     QS->>Redis: ZADD waiting:1 NX score=now userId=42
-    note over Redis: 중복 발급 방지 (NX = addIfAbsent)
+    note over Redis: NX = addIfAbsent — 중복 발급 시 silently skip (멱등)
     Redis-->>QS: OK
+
     QS->>Redis: ZRANK waiting:1 42
-    Redis-->>QS: rank=149
+    Redis-->>QS: rank (null이면 0으로 처리)
     QS-->>API: TokenIssueResponse(rank=149, estimatedWait=3s)
     API-->>Client: 200 OK
 
@@ -26,7 +31,7 @@ sequenceDiagram
     QS->>Redis: ZPOPMIN waiting:1 COUNT 50
     Redis-->>QS: [userId=1, userId=2, ..., userId=50]
     loop 입장 허가된 사용자마다
-        QS->>Redis: SET admitted:userId:1 "1" PX 600000
+        QS->>Redis: SET admitted:{userId}:{concertId} "1" PX 600000
         note over Redis: TTL 10분
     end
 ```
@@ -39,6 +44,7 @@ sequenceDiagram
 sequenceDiagram
     actor Client
     participant RateLimit as RateLimitFilter
+    participant Interceptor as IdempotencyInterceptor
     participant QueueFilter as QueueTokenFilter
     participant Controller as ReservationController
     participant Service as ReservationService
@@ -55,33 +61,53 @@ sequenceDiagram
     RateLimit->>QueueFilter: pass
     QueueFilter->>QueueFilter: assertAdmitted(userId, concertId)
     alt admitted:{userId}:{concertId} 없음
-        QueueFilter-->>Client: 400 QueueNotAdmittedException
+        QueueFilter-->>Client: 403 QueueNotAdmittedException
     end
 
     QueueFilter->>Controller: pass
     Controller->>Service: createReservation(userId, seatId, concertId, idempotencyKey)
 
     Service->>Redisson: tryLock("seat:lock:{seatId}", wait=5s, lease=3s)
-    alt 락 획득 실패
-        Redisson-->>Client: 409 LockAcquisitionFailedException
+    alt 락 획득 실패 (5s 초과)
+        Redisson-->>Service: false
+        Service-->>Client: 429 LockAcquisitionFailedException
     end
     Redisson-->>Service: lock acquired
 
     Service->>DB: SELECT user WHERE id=userId
+    alt 사용자 미존재
+        DB-->>Service: empty
+        Service-->>Client: 404 EntityNotFoundException
+    end
     DB-->>Service: User
 
     Service->>DB: SELECT seat WHERE id=seatId (with @Version)
+    alt 좌석 미존재
+        DB-->>Service: empty
+        Service-->>Client: 404 EntityNotFoundException
+    end
     DB-->>Service: Seat(status=AVAILABLE, version=3)
 
+    Service->>Service: seat.hold()
+    alt status != AVAILABLE (이미 HELD/SOLD)
+        Service-->>Client: 409 SeatNotAvailableException
+    end
+
     Service->>DB: UPDATE seat SET status=HELD, version=4\n(Optimistic Lock: WHERE version=3)
-    alt version 불일치 (동시 요청)
-        DB-->>Client: 409 OptimisticLockException
+    alt version 불일치 (극단적 동시 요청 — 분산락 TTL 만료 등)
+        DB-->>Service: OptimisticLockException
+        Service-->>Client: 409 Conflict
     end
 
     Service->>DB: INSERT INTO reservations\n(status=PENDING, expiresAt=now+5min)
     Service->>OutboxWriter: write("Reservation", id, "ReservationCreated", payload)
     note over OutboxWriter: Propagation.MANDATORY — 동일 트랜잭션 내
     OutboxWriter->>DB: INSERT INTO outbox_events (status=PENDING)
+    alt JSON 직렬화 실패
+        OutboxWriter-->>Service: RuntimeException
+        Service->>DB: ROLLBACK
+        Service-->>Client: 500 Internal Server Error
+    end
 
     DB-->>Service: COMMIT
     Service->>Redisson: unlock("seat:lock:{seatId}")
@@ -105,10 +131,14 @@ sequenceDiagram
     participant OutboxWriter
 
     Client->>Interceptor: POST /api/payments\n(Idempotency-Key: {key})
+
+    alt Idempotency-Key 헤더 누락
+        Interceptor-->>Client: 400 MissingIdempotencyKeyException
+    end
+
     Interceptor->>Redis: GET idempotency:{key}
-    
     alt 캐시 히트 (중복 요청)
-        Redis-->>Interceptor: cached PaymentResponse
+        Redis-->>Interceptor: cached PaymentResponse (JSON)
         Interceptor-->>Client: 200 OK\n(Idempotent-Replayed: true)
     end
 
@@ -116,22 +146,32 @@ sequenceDiagram
     Interceptor->>Controller: pass
 
     Controller->>Service: processPayment(request, idempotencyKey)
+
     Service->>DB: SELECT payment WHERE idempotencyKey={key}
-    alt 이미 처리됨 (cold-start fallback)
-        DB-->>Client: 200 AlreadyProcessedPaymentException
+    alt 이미 처리됨 (cold-start DB fallback)
+        DB-->>Service: Payment
+        Service-->>Controller: AlreadyProcessedPaymentException(payment)
+        Controller-->>Client: 200 OK (저장된 Payment로 응답)
     end
 
-    Service->>DB: SELECT reservation WHERE id=reservationId (join fetch)
+    Service->>DB: SELECT reservation WHERE id=reservationId
+    alt 예약 미존재
+        DB-->>Service: empty
+        Service-->>Client: 404 EntityNotFoundException
+    end
     DB-->>Service: Reservation
 
     Service->>PG: charge(PgChargeRequest) [Circuit Breaker + Retry + TimeLimiter 3s]
-    
-    alt Circuit Breaker OPEN
-        PG-->>Service: chargeFallback() → PENDING_CONFIRMATION
+
+    alt Circuit Breaker OPEN (PG 장애)
+        PG-->>Service: chargeFallback() → PgResponse(pending=true)
+        note over Service: PaymentStatus.PENDING_CONFIRMATION
     else PG 응답 성공
         PG-->>Service: PgResponse(success=true, txId="pg-txn-abc")
+        note over Service: PaymentStatus.SUCCESS
     else PG 응답 실패
         PG-->>Service: PgResponse(success=false)
+        note over Service: PaymentStatus.FAILED
     end
 
     Service->>DB: INSERT INTO payments (status, idempotencyKey, pgTransactionId)
@@ -144,10 +184,11 @@ sequenceDiagram
     end
 
     DB-->>Service: COMMIT
-    Service->>Redis: SET idempotency:{key} PaymentResponse PX 86400000
-    note over Redis: TTL 24시간
 
-    Service-->>Client: 200 PaymentResponse
+    Service->>Redis: SET idempotency:{key} PaymentResponse PX 86400000
+    note over Redis: Redis 저장 실패 시 로그만 남기고 계속 진행 (비치명적)
+
+    Service-->>Client: 200 PaymentResponse(status=SUCCESS|FAILED|PENDING_CONFIRMATION)
 ```
 
 ---
@@ -166,7 +207,7 @@ sequenceDiagram
 
         loop 각 이벤트
             Scheduler->>Kafka: send(topic=eventType, payload)
-            
+
             alt 발행 성공
                 Kafka-->>Scheduler: OK
                 Scheduler->>DB: UPDATE outbox_events\nSET status=PUBLISHED, published_at=now
@@ -175,7 +216,7 @@ sequenceDiagram
                 Scheduler->>DB: UPDATE outbox_events\nSET retry_count = retry_count + 1
                 alt retry_count >= 5
                     Scheduler->>DB: UPDATE outbox_events\nSET status=FAILED
-                    note over DB: 더 이상 재시도 안 함
+                    note over DB: 더 이상 재시도 안 함 (수동 확인 필요)
                 end
             end
         end
@@ -197,12 +238,13 @@ sequenceDiagram
         DB-->>Scheduler: [만료된 Reservation, ...]
 
         loop 각 만료 예약
-            Scheduler->>DB: UPDATE reservation SET status=EXPIRED
-            Scheduler->>DB: UPDATE seat SET status=AVAILABLE
+            Scheduler->>Scheduler: reservation.expire() (PENDING → EXPIRED)
+            Scheduler->>Scheduler: seat.release() (HELD → AVAILABLE)
             Scheduler->>OutboxWriter: write("Reservation", id, "ReservationExpired", payload)
             OutboxWriter->>DB: INSERT INTO outbox_events (status=PENDING)
         end
 
         DB-->>Scheduler: COMMIT
+        note over Scheduler,DB: 트랜잭션 실패 시 예외가 스케줄러 밖으로 전파되고\n다음 실행 주기(30초 후)에 자동 재시도됨
     end
 ```

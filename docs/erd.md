@@ -36,7 +36,7 @@ erDiagram
         bigint id PK
         bigint user_id FK "NOT NULL"
         bigint seat_id FK "NOT NULL"
-        varchar status "PENDING | CONFIRMED | PAID | CANCELLED | EXPIRED"
+        varchar status "PENDING | CONFIRMED | CANCELLED | EXPIRED"
         timestamp expires_at "NOT NULL, PENDING+5min"
         varchar idempotency_key UK
         bigint version "Optimistic Lock"
@@ -48,7 +48,7 @@ erDiagram
         bigint id PK
         bigint reservation_id FK "NOT NULL, OneToOne"
         decimal amount "NOT NULL"
-        varchar status "REQUESTED | SUCCESS | FAILED | PENDING_CONFIRMATION"
+        varchar status "SUCCESS | FAILED | PENDING_CONFIRMATION"
         varchar idempotency_key UK "NOT NULL"
         varchar pg_transaction_id
         timestamp requested_at

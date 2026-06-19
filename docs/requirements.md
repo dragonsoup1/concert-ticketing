@@ -41,7 +41,7 @@
 | ID | 요구사항 |
 |----|---------|
 | F-14 | 사용자는 예약에 대한 결제를 요청할 수 있다 |
-| F-15 | 결제 성공 시 예약 상태가 CONFIRMED → PAID로 전환되고 좌석이 SOLD 처리된다 |
+| F-15 | 결제 성공 시 예약 상태가 PENDING → CONFIRMED로 전환되고 좌석이 SOLD 처리된다 |
 | F-16 | PG사 장애 시 결제 상태가 PENDING_CONFIRMATION으로 기록되어 서비스가 중단되지 않는다 |
 | F-17 | 동일한 Idempotency-Key로 중복 결제 요청 시 최초 결제 결과를 그대로 반환한다 |
 
@@ -102,17 +102,16 @@
 ## 예약 상태 머신
 
 ```
-PENDING ──(5분 TTL, 스케줄러)──► EXPIRED  (좌석 AVAILABLE 반환)
+PENDING ──(5분 TTL, 스케줄러)──► EXPIRED    (좌석 AVAILABLE 반환)
    │
-   ├──(POST /payments 성공)──► CONFIRMED ──(PG webhook)──► PAID
-   └──(DELETE /reservations)──► CANCELLED  (좌석 AVAILABLE 반환)
+   ├──(POST /payments 성공)──► CONFIRMED    (좌석 SOLD, 최종 상태)
+   └──(DELETE /reservations)──► CANCELLED   (좌석 AVAILABLE 반환)
 ```
 
 ## 결제 상태
 
 | 상태 | 설명 |
 |------|------|
-| REQUESTED | 결제 요청 생성됨 |
 | SUCCESS | PG 승인 완료 |
 | FAILED | PG 거절 또는 오류 |
 | PENDING_CONFIRMATION | Circuit Breaker 작동, PG 응답 대기 중 |

@@ -62,7 +62,34 @@ com.api.backend/
 
 ## 핵심 설계 결정
 
-### 1. Double-Lock 좌석 예약
+### 1. Redis 가상 대기열
+
+DB 기반 대기열은 폴링 부하가 크고, 메시지 큐 기반은 순서 보장이 복잡하다. Redis ZSet을 사용해 입장 순서를 관리하고 별도 서버 없이 구현한다.
+
+```
+waiting:{concertId}   ← ZSet, score=입장요청 timestamp
+admitted:{userId}:{concertId}  ← String, TTL 10분
+```
+
+**토큰 발급 (`POST /api/queue/token`)**
+- `ZADD waiting:{concertId} NX score=now userId` — 중복 발급 방지 (NX)
+- `ZRANK`로 현재 순위 조회 → 예상 대기 시간 계산
+
+**배치 입장 (`QueueScheduler`, 1초마다)**
+- `ZPOPMIN waiting:{concertId} COUNT 50` — 상위 50명 추출
+- 추출된 사용자마다 `SET admitted:{userId}:{concertId} 1 PX 600000` (TTL 10분)
+
+**입장 검증 (`QueueTokenValidationFilter`)**
+- `POST /api/reservations` 요청 시 `admitted:{userId}:{concertId}` 존재 여부 확인
+- 없으면 `403 QueueNotAdmittedException`
+
+**TTL 만료 시 동작**
+- 10분 내 예약을 완료하지 않으면 admitted 키가 자동 삭제
+- 재입장하려면 대기열 토큰을 다시 발급받아야 함
+
+---
+
+### 2. Double-Lock 좌석 예약
 
 `ReservationService.createReservation` 에서 두 가지 락을 중첩 사용한다.
 
@@ -91,6 +118,7 @@ OutboxRelayScheduler (500ms)
 `Propagation.MANDATORY`로 서비스 트랜잭션 외부에서 `OutboxWriter.write()`가 호출되는 실수를 컴파일 타임이 아닌 런타임에 즉시 감지한다.
 
 ### 3. 결제 멱등성 이중 가드
+
 
 네트워크 재시도 등으로 동일한 결제 요청이 중복 수신될 수 있다. Redis TTL 캐시(fast path)와 DB unique constraint(cold-start fallback)를 함께 사용한다.
 
