@@ -10,8 +10,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.kafka.core.KafkaTemplate;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -24,8 +22,6 @@ class QueueServiceIntegrationTest extends IntegrationTestSupport {
 
     @Autowired QueueService queueService;
     @Autowired RedisTemplate<String, Object> redisTemplate;
-
-    @MockitoBean KafkaTemplate<String, String> kafkaTemplate;
 
     private static final Long CONCERT_ID = 1L;
 

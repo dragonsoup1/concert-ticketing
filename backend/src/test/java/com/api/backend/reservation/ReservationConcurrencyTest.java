@@ -12,7 +12,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.math.BigDecimal;
@@ -35,7 +34,6 @@ class ReservationConcurrencyTest extends IntegrationTestSupport {
     @Autowired private ReservationRepository reservationRepository;
 
     @MockitoBean QueueService queueService;
-    @MockitoBean KafkaTemplate<String, String> kafkaTemplate;
 
     private User user;
     private Concert concert;

@@ -132,4 +132,69 @@ class PaymentServiceIdempotencyTest {
         // PENDING_CONFIRMATION이면 예매 confirm 호출하지 않음
         verify(reservationService, never()).confirmPayment(any());
     }
+
+    @Test
+    @DisplayName("PG FAILED 응답 시 FAILED 상태로 저장되고 Outbox 이벤트가 발행되지 않는다")
+    void PG_FAILED_응답_시_FAILED_상태_Outbox_미발행() {
+        String key = "pay-fail-key";
+        PaymentRequest request = new PaymentRequest(1L, BigDecimal.valueOf(150_000));
+
+        Seat seat = Seat.builder()
+            .concert(null).seatNumber("A-01").grade(SeatGrade.VIP)
+            .price(BigDecimal.valueOf(150_000)).status(SeatStatus.HELD).build();
+        User user = User.builder().id(1L).email("a@b.com").name("테스터").build();
+        Reservation reservation = Reservation.builder()
+            .id(1L).user(user).seat(seat)
+            .status(ReservationStatus.PENDING)
+            .expiresAt(LocalDateTime.now().plusMinutes(5))
+            .idempotencyKey(key)
+            .build();
+
+        given(paymentRepository.findByIdempotencyKey(key)).willReturn(Optional.empty());
+        given(reservationRepository.findByIdWithDetails(1L)).willReturn(Optional.of(reservation));
+        // success=false, pending=false → FAILED
+        given(paymentGatewayClient.charge(any())).willReturn(new PgResponse(false, null, false));
+        given(paymentRepository.save(any())).willAnswer(inv -> inv.getArgument(0));
+        given(redisTemplate.opsForValue()).willReturn(valueOps);
+
+        PaymentResponse response = paymentService.processPayment(request, key);
+
+        assertThat(response.status()).isEqualTo(PaymentStatus.FAILED);
+        verify(reservationService, never()).confirmPayment(any());
+        verify(outboxWriter, never()).write(any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("PG SUCCESS 시 Outbox 이벤트가 정확히 1회 발행된다")
+    void PG_SUCCESS_시_Outbox_1회_발행() {
+        String key = "pay-success-outbox";
+        PaymentRequest request = new PaymentRequest(2L, BigDecimal.valueOf(80_000));
+
+        Seat seat = Seat.builder()
+            .concert(null).seatNumber("C-03").grade(SeatGrade.GENERAL)
+            .price(BigDecimal.valueOf(80_000)).status(SeatStatus.HELD).build();
+        User user = User.builder().id(2L).email("b@b.com").name("유저2").build();
+        Reservation reservation = Reservation.builder()
+            .id(2L).user(user).seat(seat)
+            .status(ReservationStatus.PENDING)
+            .expiresAt(LocalDateTime.now().plusMinutes(5))
+            .idempotencyKey(key)
+            .build();
+        Payment payment = Payment.builder()
+            .id(2L).reservation(reservation)
+            .amount(request.amount()).status(PaymentStatus.SUCCESS)
+            .idempotencyKey(key).pgTransactionId("pg-tx-002").build();
+
+        given(paymentRepository.findByIdempotencyKey(key)).willReturn(Optional.empty());
+        given(reservationRepository.findByIdWithDetails(2L)).willReturn(Optional.of(reservation));
+        given(paymentGatewayClient.charge(any())).willReturn(PgResponse.success("pg-tx-002"));
+        given(paymentRepository.save(any())).willReturn(payment);
+        given(redisTemplate.opsForValue()).willReturn(valueOps);
+
+        paymentService.processPayment(request, key);
+
+        verify(outboxWriter, times(1)).write(
+            eq("Payment"), eq(2L), eq("PaymentCompleted"), any());
+        verify(reservationService, times(1)).confirmPayment(2L);
+    }
 }

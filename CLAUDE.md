@@ -11,7 +11,8 @@ Concert ticketing backend — a Spring Boot 4.1.0 / Java 17 portfolio project de
 ```
 concert-ticketing/
 ├── backend/          ← Spring Boot application (see backend/CLAUDE.md)
-├── docker-compose.yml
+├── infra/
+│   └── docker-compose.yml
 └── CLAUDE.md
 ```
 
@@ -20,5 +21,5 @@ concert-ticketing/
 Start PostgreSQL, Redis, and Kafka before running the application:
 
 ```bash
-docker compose up -d
+docker compose -f infra/docker-compose.yml up -d
 ```

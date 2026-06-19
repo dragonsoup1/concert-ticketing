@@ -4,11 +4,11 @@ import com.api.backend.outbox.application.OutboxRelayScheduler;
 import com.api.backend.outbox.domain.OutboxEvent;
 import com.api.backend.outbox.domain.OutboxEventRepository;
 import com.api.backend.outbox.domain.OutboxStatus;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -24,9 +24,16 @@ import static org.mockito.Mockito.*;
 @DisplayName("Outbox Relay 스케줄러 테스트")
 class OutboxRelaySchedulerTest {
 
-    @InjectMocks OutboxRelayScheduler scheduler;
+    // @InjectMocks 대신 직접 생성 — Spring AOP 프록시가 끼어드는 것을 막는다
+    OutboxRelayScheduler scheduler;
+
     @Mock OutboxEventRepository outboxEventRepository;
     @Mock KafkaTemplate<String, String> kafkaTemplate;
+
+    @BeforeEach
+    void setUp() {
+        scheduler = new OutboxRelayScheduler(outboxEventRepository, kafkaTemplate);
+    }
 
     @Test
     @DisplayName("PENDING 이벤트를 Kafka로 발행하고 PUBLISHED로 상태를 변경한다")
@@ -64,7 +71,7 @@ class OutboxRelaySchedulerTest {
         given(outboxEventRepository.findTop50ByStatusOrderByCreatedAtAsc(OutboxStatus.PENDING))
             .willReturn(List.of(event));
         doThrow(new RuntimeException("Kafka 연결 실패"))
-            .when(kafkaTemplate).send(anyString(), anyString());
+            .when(kafkaTemplate).send(any(), any());
 
         scheduler.relay();
 
@@ -84,7 +91,7 @@ class OutboxRelaySchedulerTest {
         given(outboxEventRepository.findTop50ByStatusOrderByCreatedAtAsc(OutboxStatus.PENDING))
             .willReturn(List.of(event));
         doThrow(new RuntimeException("일시적 장애"))
-            .when(kafkaTemplate).send(anyString(), anyString());
+            .when(kafkaTemplate).send(any(), any());
 
         scheduler.relay();
 

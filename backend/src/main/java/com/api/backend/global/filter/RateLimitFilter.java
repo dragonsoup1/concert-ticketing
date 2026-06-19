@@ -7,7 +7,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
@@ -21,7 +21,7 @@ import java.util.List;
 @Slf4j
 public class RateLimitFilter extends OncePerRequestFilter {
 
-    private final RedisTemplate<String, Object> redisTemplate;
+    private final StringRedisTemplate stringRedisTemplate;
 
     @Value("${rate-limit.window-millis:1000}")
     private long windowMillis;
@@ -39,8 +39,9 @@ public class RateLimitFilter extends OncePerRequestFilter {
             local now    = tonumber(ARGV[1])
             local window = tonumber(ARGV[2])
             local limit  = tonumber(ARGV[3])
+            local uid    = ARGV[4]
             redis.call('ZREMRANGEBYSCORE', key, '-inf', now - window)
-            redis.call('ZADD', key, now, now)
+            redis.call('ZADD', key, now, uid)
             local count = redis.call('ZCARD', key)
             redis.call('PEXPIRE', key, window)
             return count
@@ -58,13 +59,15 @@ public class RateLimitFilter extends OncePerRequestFilter {
 
         String key = "rate:" + userId;
         long now   = System.currentTimeMillis();
+        String uid = String.valueOf(System.nanoTime());
 
-        Long count = redisTemplate.execute(
+        Long count = stringRedisTemplate.execute(
             SLIDING_WINDOW_SCRIPT,
             List.of(key),
             String.valueOf(now),
             String.valueOf(windowMillis),
-            String.valueOf(maxRequests)
+            String.valueOf(maxRequests),
+            uid
         );
 
         if (count != null && count > maxRequests) {

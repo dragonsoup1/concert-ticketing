@@ -1,14 +1,12 @@
 package com.api.backend.global;
 
+import com.api.backend.global.filter.RateLimitFilter;
 import com.api.backend.support.IntegrationTestSupport;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.kafka.core.KafkaTemplate;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
@@ -16,22 +14,22 @@ import org.springframework.web.context.WebApplicationContext;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
 @DisplayName("Rate Limit 슬라이딩 윈도우 테스트")
 class RateLimitFilterTest extends IntegrationTestSupport {
 
     @Autowired WebApplicationContext context;
-    @Autowired RedisTemplate<String, Object> redisTemplate;
-
-    @MockitoBean KafkaTemplate<String, String> kafkaTemplate;
+    @Autowired StringRedisTemplate stringRedisTemplate;
+    @Autowired RateLimitFilter rateLimitFilter;
 
     private MockMvc mockMvc;
     private static final String USER_ID = "rate-test-user-" + System.currentTimeMillis();
 
     @BeforeEach
     void setUp() {
-        mockMvc = MockMvcBuilders.webAppContextSetup(context).build();
-        redisTemplate.delete("rate:" + USER_ID);
+        mockMvc = MockMvcBuilders.webAppContextSetup(context)
+            .addFilters(rateLimitFilter)
+            .build();
+        stringRedisTemplate.delete("rate:" + USER_ID);
     }
 
     @Test
